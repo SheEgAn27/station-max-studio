@@ -16,4 +16,4 @@ python -m PyInstaller `
     --collect-all imageio_ffmpeg `
     "src/station_max_studio.py"
 
-Write-Host "Готово: $projectRoot\dist\Station Max Studio v2.1.3.exe"
+Write-Host "Built: $projectRoot\dist\Station Max Studio v2.1.3.exe"
