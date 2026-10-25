@@ -16,4 +16,8 @@ python -m PyInstaller `
     --collect-all imageio_ffmpeg `
     "src/station_max_studio.py"
 
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Built: $projectRoot\dist\Station Max Studio v2.1.3.exe"
