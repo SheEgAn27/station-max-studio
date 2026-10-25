@@ -30,6 +30,8 @@ import uuid
 from functools import partial
 from pathlib import Path
 
+import certifi
+
 
 APP_NAME = "Station Max Studio"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
@@ -144,10 +146,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _https_context() -> ssl.SSLContext:
+    """Create a TLS context even if Windows has stale SSL_* environment paths."""
+    invalid_override = any(
+        value and not Path(value).exists()
+        for value in (
+            os.environ.get("SSL_CERT_FILE"),
+            os.environ.get("SSL_CERT_DIR"),
+        )
+    )
+    if invalid_override:
+        return ssl.create_default_context(cafile=certifi.where())
+    try:
+        return ssl.create_default_context()
+    except FileNotFoundError:
+        return ssl.create_default_context(cafile=certifi.where())
+
+
+def _https_opener(*handlers):
+    return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_https_context()),
+        *handlers,
+    )
+
+
 class YandexSession:
     def __init__(self):
         self.jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
+        self.opener = _https_opener(
             urllib.request.HTTPCookieProcessor(self.jar)
         )
         self.csrf = ""
@@ -279,7 +305,7 @@ def _session_from_token(x_token: str):
     if not x_token:
         raise RuntimeError("Сначала войдите в аккаунт Яндекса")
     jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener = _https_opener(urllib.request.HTTPCookieProcessor(jar))
     form = urllib.parse.urlencode(
         {"type": "x-token", "retpath": "https://www.yandex.ru"}
     ).encode("utf-8")
@@ -382,7 +408,9 @@ def get_music_token(x_token: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(
+            request, timeout=20, context=_https_context()
+        ) as response:
             data = json.load(response)
     except Exception as exc:
         raise RuntimeError(f"Не удалось получить токен Яндекс Музыки: {exc}") from exc
@@ -400,7 +428,9 @@ def get_glagol_token(x_token: str, device_id: str, platform: str) -> str:
         headers={"Authorization": f"OAuth {music_token}", "User-Agent": USER_AGENT},
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(
+            request, timeout=20, context=_https_context()
+        ) as response:
             data = json.load(response)
     except Exception as exc:
         raise RuntimeError(f"Не удалось получить локальный токен колонки: {exc}") from exc
@@ -424,7 +454,7 @@ class GlagolSocket:
     def __init__(self, host: str, port: int = 1961, timeout: float = 8):
         self.host = host
         raw = socket.create_connection((host, port), timeout=timeout)
-        context = ssl.create_default_context()
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         self.sock = context.wrap_socket(raw, server_hostname=host)
