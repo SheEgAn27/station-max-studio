@@ -574,7 +574,635 @@ class MediaEditor(ctk.CTkFrame):
             self._compact_option(video_row, 0, "Кадров/с", self.fps_var, ["5", "10", "15", "20"])
             self._compact_option(video_row, 1, "Макс. секунд", self.video_length_var, ["10", "30", "60", "120"])
         else:
-            self._row_…7871 tokens truncated…: list_stations(token), self.populate_stations, "Загружаю список колонок…")
+            self._row_label(left, "Время показа статичного фото")
+            duration_row = ctk.CTkFrame(left, fg_color="transparent")
+            duration_row.pack(fill="x", pady=(0, 7))
+            duration_row.grid_columnconfigure(0, weight=1)
+            ctk.CTkEntry(
+                duration_row,
+                textvariable=self.duration_value_var,
+                height=38,
+                fg_color=COLORS["panel_alt"],
+                border_color=COLORS["border"],
+                placeholder_text="Введите число",
+            ).grid(row=0, column=0, sticky="ew", padx=(0, 7))
+            ctk.CTkOptionMenu(
+                duration_row,
+                values=list(DURATION_UNITS),
+                variable=self.duration_unit_var,
+                width=112,
+                height=38,
+                corner_radius=10,
+                fg_color=COLORS["panel_alt"],
+                button_color=COLORS["accent_dark"],
+                button_hover_color=COLORS["accent"],
+            ).grid(row=0, column=1, sticky="e")
+            ctk.CTkButton(
+                left,
+                text="Установить максимум — 45 д 12 ч 15 мин",
+                height=34,
+                fg_color=COLORS["panel_alt"],
+                hover_color=COLORS["accent_dark"],
+                command=self.set_max_duration,
+            ).pack(fill="x", pady=(0, 14))
+
+        actions = ctk.CTkFrame(left, fg_color="transparent")
+        actions.pack(fill="x", pady=(2, 18))
+        actions.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(
+            actions,
+            text="Сохранить GIF",
+            height=44,
+            corner_radius=12,
+            fg_color=COLORS["panel_alt"],
+            hover_color=COLORS["accent_dark"],
+            border_width=1,
+            border_color=COLORS["border"],
+            command=lambda: self.convert(False),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkButton(
+            actions,
+            text="➤  Отправить",
+            height=44,
+            corner_radius=12,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            command=lambda: self.convert(True),
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+    def _build_preview(self):
+        right = ctk.CTkFrame(self, fg_color=COLORS["panel"], corner_radius=18)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            right,
+            text="Предпросмотр матрицы",
+            text_color=COLORS["text"],
+            font=ctk.CTkFont("Segoe UI", 23, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 0))
+        ctk.CTkLabel(
+            right,
+            text="Именно так изображение будет выглядеть на Станции Макс",
+            text_color=COLORS["muted"],
+            font=ctk.CTkFont("Segoe UI", 13),
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=24, pady=(2, 12))
+
+        preview_shell = ctk.CTkFrame(
+            right,
+            fg_color="#0b0e16",
+            border_width=1,
+            border_color=COLORS["border"],
+            corner_radius=18,
+        )
+        preview_shell.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 12))
+        self.preview_label = ctk.CTkLabel(
+            preview_shell,
+            text="Выберите файл для мгновенного предпросмотра",
+            text_color=COLORS["muted"],
+            font=ctk.CTkFont("Segoe UI", 14),
+        )
+        self.preview_label.pack(expand=True, fill="both", padx=12, pady=12)
+
+        self.preview_info = ctk.CTkLabel(
+            right,
+            text="25 × 16 пикселей • 256 градаций серого",
+            text_color="#c4b5fd",
+            fg_color=COLORS["panel_alt"],
+            corner_radius=10,
+            font=ctk.CTkFont("Segoe UI", 12),
+        )
+        self.preview_info.grid(row=3, column=0, pady=(0, 12), ipadx=12, ipady=5)
+
+        recent = ctk.CTkFrame(right, fg_color=COLORS["panel_alt"], corner_radius=14)
+        recent.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 20))
+        ctk.CTkLabel(
+            recent,
+            text="Последние файлы",
+            text_color=COLORS["text"],
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=14, pady=(10, 4))
+        self.recent_frame = ctk.CTkFrame(recent, fg_color="transparent")
+        self.recent_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.refresh_recent()
+
+    def _row_label(self, master, text):
+        ctk.CTkLabel(
+            master,
+            text=text,
+            text_color=COLORS["muted"],
+            font=ctk.CTkFont("Segoe UI", 12),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 5))
+
+    def _slider(self, master, title, variable, start, end, formatter):
+        row = ctk.CTkFrame(master, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 3))
+        label = ctk.CTkLabel(row, text=title, text_color=COLORS["muted"], anchor="w")
+        label.pack(side="left")
+        value_label = ctk.CTkLabel(row, text=formatter(variable.get()), text_color="#c4b5fd")
+        value_label.pack(side="right")
+
+        def changed(value):
+            value_label.configure(text=formatter(float(value)))
+            self.update_preview()
+
+        slider = CursorOnlySlider(
+            master,
+            from_=start,
+            to=end,
+            variable=variable,
+            command=changed,
+            progress_color=COLORS["accent"],
+            button_color="#f4f0ff",
+            button_hover_color="white",
+        )
+        slider.pack(fill="x", pady=(0, 10))
+
+    def _compact_option(self, master, column, title, variable, values):
+        box = ctk.CTkFrame(master, fg_color="transparent")
+        box.grid(row=0, column=column, sticky="ew", padx=(0, 6) if column == 0 else (6, 0))
+        ctk.CTkLabel(box, text=title, text_color=COLORS["muted"], anchor="w").pack(fill="x")
+        ctk.CTkOptionMenu(
+            box,
+            values=values,
+            variable=variable,
+            fg_color=COLORS["panel_alt"],
+            button_color=COLORS["accent_dark"],
+            height=36,
+        ).pack(fill="x", pady=(4, 0))
+
+    def set_max_duration(self):
+        self.duration_value_var.set(str(int(MAX_STATIC_SECONDS)))
+        self.duration_unit_var.set("секунд")
+
+    def photo_duration_seconds(self) -> float:
+        raw = self.duration_value_var.get().strip().replace(",", ".")
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError("Введите время показа числом") from exc
+        seconds = value * DURATION_UNITS[self.duration_unit_var.get()]
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("Время показа должно быть больше нуля")
+        if seconds > MAX_STATIC_SECONDS:
+            raise ValueError("Максимальное время показа — 45 дней 12 часов 15 минут")
+        return seconds
+
+    def choose_file(self):
+        if self.video:
+            filetypes = [("Видео", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v *.mpeg *.mpg"), ("Все файлы", "*.*")]
+        else:
+            filetypes = [("Изображения", "*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff"), ("Все файлы", "*.*")]
+        path = filedialog.askopenfilename(title="Выберите файл", filetypes=filetypes)
+        if path:
+            self.load_path(Path(path))
+
+    def load_path(self, path: Path):
+        if not path.exists():
+            messagebox.showerror("Station Max Studio", "Файл не найден")
+            return
+        valid = VIDEO_EXTENSIONS if self.video else IMAGE_EXTENSIONS
+        if path.suffix.lower() not in valid:
+            messagebox.showerror("Station Max Studio", "Неподдерживаемый формат файла")
+            return
+        self.source_path = path
+        self.file_label.configure(text=path.name)
+        self.app.run_job(
+            lambda: first_frame(path),
+            self._loaded,
+            "Создаю предпросмотр…",
+        )
+
+    def _loaded(self, image):
+        self.source_frame = image
+        self.update_preview()
+        kind = "Видео" if self.video else "Источник"
+        self.preview_info.configure(text=f"{kind}: {image.width}×{image.height}  →  экран 25×16")
+
+    def settings(self):
+        return {
+            "fit_mode": FIT_MODES[self.fit_var.get()],
+            "zoom": float(self.zoom_var.get()),
+            "pan_x": float(self.pan_x_var.get()),
+            "pan_y": float(self.pan_y_var.get()),
+            "brightness": float(self.brightness_var.get()),
+            "contrast": float(self.contrast_var.get()),
+            "invert": bool(self.invert_var.get()),
+            "flip": bool(self.flip_var.get()),
+            "rotation": self.rotation,
+        }
+
+    def update_preview(self):
+        if self.source_frame is None:
+            return
+        try:
+            transformed = transform_frame(self.source_frame, self.settings())
+            rendered = render_led_preview(transformed)
+            self.preview_ctk = ctk.CTkImage(
+                light_image=rendered,
+                dark_image=rendered,
+                size=rendered.size,
+            )
+            self.preview_label.configure(image=self.preview_ctk, text="")
+        except Exception as exc:
+            self.preview_label.configure(image=None, text=f"Не удалось показать: {exc}")
+
+    def rotate(self, degrees):
+        self.rotation = (self.rotation + degrees) % 360
+        self.update_preview()
+
+    def reset_editor(self):
+        defaults = editor_defaults()
+        self.fit_var.set("Вписать целиком")
+        self.zoom_var.set(defaults["zoom"])
+        self.pan_x_var.set(defaults["pan_x"])
+        self.pan_y_var.set(defaults["pan_y"])
+        self.brightness_var.set(defaults["brightness"])
+        self.contrast_var.set(defaults["contrast"])
+        self.invert_var.set(defaults["invert"])
+        self.flip_var.set(defaults["flip"])
+        self.rotation = 0
+        self.update_preview()
+
+    def convert(self, send_after):
+        if self.source_path is None:
+            messagebox.showinfo("Station Max Studio", "Сначала выберите файл")
+            return
+        source = self.source_path
+        options = self.settings()
+        try:
+            if self.video:
+                video_fps = int(self.fps_var.get())
+                video_seconds = int(self.video_length_var.get())
+                photo_seconds = None
+            else:
+                video_fps = video_seconds = None
+                photo_seconds = self.photo_duration_seconds()
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Station Max Studio", str(exc))
+            return
+
+        def progress(text):
+            self.app.after(0, lambda: self.app.set_status(text))
+
+        def job():
+            if self.video:
+                output = convert_video(
+                    source,
+                    options,
+                    video_fps,
+                    video_seconds,
+                    progress,
+                )
+            else:
+                output = convert_image(source, options, photo_seconds)
+            if send_after:
+                self.app.send_path(output)
+            return output
+
+        self.app.run_job(
+            job,
+            lambda output: self._converted(output, send_after),
+            "Преобразую файл…",
+        )
+
+    def _converted(self, output, sent):
+        append_history(output, "Отправлено на Станцию" if sent else "Сохранено")
+        self.app.refresh_library_views()
+        message = "Файл сохранён и отправлен" if sent else "GIF сохранён"
+        messagebox.showinfo("Station Max Studio", f"{message}:\n{output}")
+
+    def refresh_recent(self):
+        if not hasattr(self, "recent_frame"):
+            return
+        for widget in self.recent_frame.winfo_children():
+            widget.destroy()
+        paths = sorted(READY_DIR.glob("*.gif"), key=lambda p: p.stat().st_mtime, reverse=True)
+        paths = [path for path in paths if not path.name.startswith("SheEgAn-connect")][:4]
+        if not paths:
+            ctk.CTkLabel(
+                self.recent_frame,
+                text="Здесь появятся последние сохранённые GIF",
+                text_color=COLORS["muted"],
+            ).pack(anchor="w", padx=4, pady=5)
+            return
+        for path in paths:
+            ctk.CTkButton(
+                self.recent_frame,
+                text=path.stem[:22],
+                height=32,
+                fg_color="#252b40",
+                hover_color=COLORS["accent_dark"],
+                command=lambda item=path: self.open_recent(item),
+            ).pack(side="left", padx=4, fill="x", expand=True)
+
+    def open_recent(self, path: Path):
+        if self.video:
+            self.app.show_page("screen")
+            self.app.image_editor.load_path(path)
+        else:
+            self.load_path(path)
+
+
+class DrawingPage(ctk.CTkFrame):
+    def __init__(self, master, app):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        self.pixels = [[0 for _ in range(25)] for _ in range(16)]
+        self.cell = 27
+        self.brush = tk.IntVar(value=255)
+        self.brush_size = tk.IntVar(value=1)
+        self.duration = tk.StringVar(value="1 час")
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        controls = ctk.CTkFrame(self, width=300, fg_color=COLORS["panel"], corner_radius=18)
+        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        controls.grid_propagate(False)
+        ctk.CTkLabel(controls, text="Рисование", font=ctk.CTkFont("Segoe UI", 23, "bold")).pack(anchor="w", padx=20, pady=(20, 4))
+        ctk.CTkLabel(controls, text="ЛКМ — рисовать, ПКМ — стирать", text_color=COLORS["muted"]).pack(anchor="w", padx=20, pady=(0, 20))
+        ctk.CTkLabel(controls, text="Яркость светодиода", text_color=COLORS["muted"]).pack(anchor="w", padx=20)
+        CursorOnlySlider(controls, from_=0, to=255, variable=self.brush, progress_color=COLORS["accent"]).pack(fill="x", padx=20, pady=(6, 16))
+        ctk.CTkLabel(controls, text="Размер кисти", text_color=COLORS["muted"]).pack(anchor="w", padx=20)
+        ctk.CTkOptionMenu(controls, values=["1", "2", "3", "4"], command=lambda value: self.brush_size.set(int(value)), fg_color=COLORS["panel_alt"], button_color=COLORS["accent_dark"]).pack(fill="x", padx=20, pady=(6, 16))
+        for text, command in (("Очистить", self.clear), ("Залить", self.fill), ("Инвертировать", self.invert)):
+            ctk.CTkButton(controls, text=text, fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=command).pack(fill="x", padx=20, pady=4)
+        ctk.CTkLabel(controls, text="Время показа", text_color=COLORS["muted"]).pack(anchor="w", padx=20, pady=(20, 4))
+        ctk.CTkOptionMenu(controls, values=list(DURATIONS), variable=self.duration, fg_color=COLORS["panel_alt"], button_color=COLORS["accent_dark"]).pack(fill="x", padx=20)
+        ctk.CTkButton(controls, text="Сохранить рисунок", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=lambda: self.save(False)).pack(fill="x", padx=20, pady=(22, 6))
+        ctk.CTkButton(controls, text="➤  Отправить на Станцию", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=lambda: self.save(True)).pack(fill="x", padx=20)
+
+        board_frame = ctk.CTkFrame(self, fg_color=COLORS["panel"], corner_radius=18)
+        board_frame.grid(row=0, column=1, sticky="nsew")
+        ctk.CTkLabel(board_frame, text="Матрица 25 × 16", font=ctk.CTkFont("Segoe UI", 23, "bold")).pack(anchor="w", padx=24, pady=(20, 0))
+        ctk.CTkLabel(board_frame, text="Каждая клетка соответствует одному светодиоду Макса", text_color=COLORS["muted"]).pack(anchor="w", padx=24, pady=(2, 10))
+        self.canvas = tk.Canvas(board_frame, width=25 * self.cell, height=16 * self.cell, bg="#070910", highlightthickness=0)
+        self.canvas.pack(expand=True, padx=20, pady=20)
+        self.canvas.bind("<Button-1>", lambda event: self.paint(event, False))
+        self.canvas.bind("<B1-Motion>", lambda event: self.paint(event, False))
+        self.canvas.bind("<Button-3>", lambda event: self.paint(event, True))
+        self.canvas.bind("<B3-Motion>", lambda event: self.paint(event, True))
+        self.draw()
+
+    def paint(self, event, erase):
+        x, y = event.x // self.cell, event.y // self.cell
+        if not (0 <= x < 25 and 0 <= y < 16):
+            return
+        value = 0 if erase else max(0, min(255, int(self.brush.get())))
+        radius = max(1, int(self.brush_size.get())) - 1
+        for yy in range(max(0, y - radius), min(16, y + radius + 1)):
+            for xx in range(max(0, x - radius), min(25, x + radius + 1)):
+                self.pixels[yy][xx] = value
+        self.draw()
+
+    def draw(self):
+        self.canvas.delete("all")
+        for y in range(16):
+            for x in range(25):
+                value = self.pixels[y][x]
+                color = f"#{value:02x}{value:02x}{value:02x}"
+                x0, y0 = x * self.cell, y * self.cell
+                self.canvas.create_rectangle(x0 + 1, y0 + 1, x0 + self.cell - 2, y0 + self.cell - 2, fill=color, outline="#2d3347", width=1)
+
+    def clear(self):
+        self.pixels = [[0 for _ in range(25)] for _ in range(16)]
+        self.draw()
+
+    def fill(self):
+        value = max(0, min(255, int(self.brush.get())))
+        self.pixels = [[value for _ in range(25)] for _ in range(16)]
+        self.draw()
+
+    def invert(self):
+        self.pixels = [[255 - value for value in row] for row in self.pixels]
+        self.draw()
+
+    def save(self, send_after):
+        snapshot = [row[:] for row in self.pixels]
+
+        def job():
+            output = save_drawing(snapshot, DURATIONS[self.duration.get()])
+            if send_after:
+                self.app.send_path(output)
+            return output
+
+        self.app.run_job(job, lambda output: self.saved(output, send_after), "Сохраняю рисунок…")
+
+    def saved(self, output, sent):
+        append_history(output, "Отправлено на Станцию" if sent else "Сохранено")
+        self.app.refresh_library_views()
+        messagebox.showinfo("Station Max Studio", ("Рисунок отправлен:\n" if sent else "Рисунок сохранён:\n") + str(output))
+
+
+class LibraryPage(ctk.CTkFrame):
+    def __init__(self, master, app):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(header, text="Готовые файлы", font=ctk.CTkFont("Segoe UI", 25, "bold")).pack(side="left")
+        ctk.CTkButton(header, text="Открыть папку", width=130, fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=lambda: os.startfile(READY_DIR)).pack(side="right")
+        self.list_frame = ctk.CTkScrollableFrame(self, fg_color=COLORS["panel"], corner_radius=18)
+        self.list_frame.pack(fill="both", expand=True)
+        self.refresh()
+
+    def refresh(self):
+        for widget in self.list_frame.winfo_children():
+            widget.destroy()
+        paths = sorted(READY_DIR.glob("*.gif"), key=lambda p: p.stat().st_mtime, reverse=True)
+        paths = [path for path in paths if not path.name.startswith("SheEgAn-connect")]
+        if not paths:
+            ctk.CTkLabel(self.list_frame, text="Пока нет готовых GIF", text_color=COLORS["muted"], font=ctk.CTkFont("Segoe UI", 16)).pack(pady=60)
+            return
+        for path in paths:
+            row = ctk.CTkFrame(self.list_frame, fg_color=COLORS["panel_alt"], corner_radius=12)
+            row.pack(fill="x", padx=8, pady=5)
+            info = ctk.CTkFrame(row, fg_color="transparent")
+            info.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+            ctk.CTkLabel(info, text=path.name, font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(fill="x")
+            ctk.CTkLabel(info, text=f"{path.stat().st_size / 1024:.1f} КБ • {datetime.fromtimestamp(path.stat().st_mtime):%d.%m.%Y %H:%M}", text_color=COLORS["muted"], anchor="w").pack(fill="x")
+            ctk.CTkButton(row, text="Редактировать", width=110, fg_color="#272d42", hover_color=COLORS["accent_dark"], command=lambda item=path: self.edit(item)).pack(side="right", padx=5)
+            ctk.CTkButton(row, text="Отправить", width=100, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=lambda item=path: self.send(item)).pack(side="right", padx=(5, 14))
+
+    def edit(self, path):
+        self.app.show_page("screen")
+        self.app.image_editor.load_path(path)
+
+    def send(self, path):
+        self.app.run_job(lambda: self.app.send_path(path), lambda _value: self.sent(path), "Отправляю GIF…")
+
+    def sent(self, path):
+        append_history(path, "Отправлено на Станцию")
+        self.app.history_page.refresh()
+        messagebox.showinfo("Station Max Studio", "GIF отправлен на Станцию")
+
+
+class HistoryPage(ctk.CTkFrame):
+    def __init__(self, master):
+        super().__init__(master, fg_color="transparent")
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(header, text="История", font=ctk.CTkFont("Segoe UI", 25, "bold")).pack(side="left")
+        ctk.CTkButton(header, text="Очистить", width=100, fg_color=COLORS["panel_alt"], hover_color=COLORS["danger"], command=self.clear).pack(side="right")
+        self.list_frame = ctk.CTkScrollableFrame(self, fg_color=COLORS["panel"], corner_radius=18)
+        self.list_frame.pack(fill="both", expand=True)
+        self.refresh()
+
+    def refresh(self):
+        for widget in self.list_frame.winfo_children():
+            widget.destroy()
+        history = read_history()
+        if not history:
+            ctk.CTkLabel(self.list_frame, text="История пока пуста", text_color=COLORS["muted"], font=ctk.CTkFont("Segoe UI", 16)).pack(pady=60)
+            return
+        for item in history:
+            row = ctk.CTkFrame(self.list_frame, fg_color=COLORS["panel_alt"], corner_radius=12)
+            row.pack(fill="x", padx=8, pady=5)
+            ctk.CTkLabel(row, text="●", text_color=COLORS["success"] if "Отправлено" in item.get("action", "") else "#a78bfa").pack(side="left", padx=(14, 8))
+            text = ctk.CTkFrame(row, fg_color="transparent")
+            text.pack(side="left", fill="x", expand=True, pady=9)
+            ctk.CTkLabel(text, text=item.get("name", "Файл"), font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(fill="x")
+            ctk.CTkLabel(text, text=item.get("action", "") + " • " + item.get("time", ""), text_color=COLORS["muted"], anchor="w").pack(fill="x")
+
+    def clear(self):
+        HISTORY_PATH.write_text("[]", encoding="utf-8")
+        self.refresh()
+
+
+class ConnectionDialog(ctk.CTkToplevel):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.settings = dict(owner.connection)
+        self.station_map = {}
+        self.working = False
+        self.title("Настройка подключения")
+        self.geometry("720x690")
+        self.minsize(680, 620)
+        self.configure(fg_color=COLORS["window"])
+        self.transient(owner)
+        self.grab_set()
+
+        content = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=22, pady=20)
+        ctk.CTkLabel(content, text="Подключение к Станции", font=ctk.CTkFont("Segoe UI", 26, "bold"), anchor="w").pack(fill="x")
+        ctk.CTkLabel(content, text="Войдите напрямую или импортируйте авторизацию из Home Assistant.", text_color=COLORS["muted"], anchor="w").pack(fill="x", pady=(2, 16))
+
+        account = self._section(content, "1. Аккаунт Яндекса")
+        self.account_label = ctk.CTkLabel(account, text="Авторизация сохранена" if self.settings.get("x_token") else "Вход ещё не выполнен", text_color=COLORS["success"] if self.settings.get("x_token") else COLORS["muted"], anchor="w")
+        self.account_label.pack(fill="x", padx=16, pady=(0, 10))
+        buttons = ctk.CTkFrame(account, fg_color="transparent")
+        buttons.pack(fill="x", padx=16, pady=(0, 16))
+        self.login_button = ctk.CTkButton(buttons, text="Войти через Яндекс", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
+        self.login_button.pack(side="left", padx=(0, 8))
+        self.import_button = ctk.CTkButton(buttons, text="Импорт из Home Assistant", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_ha)
+        self.import_button.pack(side="left")
+
+        station = self._section(content, "2. Выбор колонки")
+        self.station_var = tk.StringVar(value="Выберите колонку")
+        self.station_menu = ctk.CTkOptionMenu(station, variable=self.station_var, values=["Выберите колонку"], command=self.station_selected, fg_color=COLORS["panel_alt"], button_color=COLORS["accent_dark"], height=40)
+        self.station_menu.pack(fill="x", padx=16, pady=(0, 10))
+        self.refresh_button = ctk.CTkButton(station, text="Обновить список", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.refresh_stations)
+        self.refresh_button.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkLabel(station, text="IP колонки", text_color=COLORS["muted"], anchor="w").pack(fill="x", padx=16)
+        ip_row = ctk.CTkFrame(station, fg_color="transparent")
+        ip_row.pack(fill="x", padx=16, pady=(5, 16))
+        self.ip_var = tk.StringVar(value=self.settings.get("station_ip", ""))
+        ctk.CTkEntry(ip_row, textvariable=self.ip_var, height=40, fg_color=COLORS["panel_alt"], border_color=COLORS["border"]).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.find_button = ctk.CTkButton(ip_row, text="Найти в сети", width=150, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.find_ip)
+        self.find_button.pack(side="right")
+
+        local = self._section(content, "3. Локальная раздача")
+        local_row = ctk.CTkFrame(local, fg_color="transparent")
+        local_row.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(local_row, text="Порт встроенного сервера", text_color=COLORS["muted"]).pack(side="left")
+        self.port_var = tk.StringVar(value=str(self.settings.get("http_port", 8765)))
+        ctk.CTkEntry(local_row, textvariable=self.port_var, width=100, height=36, fg_color=COLORS["panel_alt"], border_color=COLORS["border"]).pack(side="right")
+        self.status_var = tk.StringVar(value="")
+        ctk.CTkLabel(content, textvariable=self.status_var, text_color=COLORS["muted"], wraplength=620).pack(fill="x", pady=10)
+        footer = ctk.CTkFrame(content, fg_color="transparent")
+        footer.pack(fill="x", pady=(5, 8))
+        ctk.CTkButton(footer, text="Отмена", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.destroy).pack(side="right")
+        ctk.CTkButton(footer, text="Сохранить и подключиться", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.save).pack(side="right", padx=(0, 8))
+
+        if self.settings.get("x_token"):
+            self.after(180, self.refresh_stations)
+
+    def _section(self, master, title):
+        frame = ctk.CTkFrame(master, fg_color=COLORS["panel"], corner_radius=15)
+        frame.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(frame, text=title, font=ctk.CTkFont("Segoe UI", 17, "bold"), anchor="w").pack(fill="x", padx=16, pady=(14, 10))
+        return frame
+
+    def set_working(self, value, status=""):
+        self.working = value
+        self.status_var.set(status or "")
+        state = "disabled" if value else "normal"
+        for button in (self.login_button, self.import_button, self.refresh_button, self.find_button):
+            button.configure(state=state)
+
+    def run_job(self, job, done, status="Подождите…"):
+        if self.working:
+            return
+        self.set_working(True, status)
+
+        def worker():
+            try:
+                result = job()
+            except Exception as exc:
+                details = traceback.format_exc()
+                self.after(0, lambda error=exc, trace=details: self.failed(error, trace))
+                return
+            self.after(0, lambda: self.completed(result, done))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def completed(self, result, done):
+        self.set_working(False, "")
+        done(result)
+
+    def failed(self, error, details):
+        self.set_working(False, "Ошибка")
+        log = DATA_DIR / "last-error.log"
+        log.write_text(details, encoding="utf-8")
+        messagebox.showerror("Настройка подключения", f"{error}\n\nПодробности: {log}", parent=self)
+
+    def login(self):
+        def status(text):
+            self.after(0, lambda: self.status_var.set(text))
+
+        self.run_job(lambda: self._login_job(status), self.login_finished, "Открываю Яндекс…")
+
+    def _login_job(self, status):
+        token = qr_login(webbrowser.open, status)
+        return token, list_stations(token)
+
+    def import_ha(self):
+        folder = filedialog.askdirectory(title="Выберите config Home Assistant или корень HassWP", parent=self)
+        if folder:
+            self.run_job(lambda: self._import_job(folder), self.login_finished, "Читаю настройки Home Assistant…")
+
+    def _import_job(self, folder):
+        token = read_home_assistant_token(folder)
+        return token, list_stations(token)
+
+    def login_finished(self, result):
+        token, stations = result
+        self.settings["x_token"] = token
+        self.account_label.configure(text="Авторизация сохранена", text_color=COLORS["success"])
+        self.populate_stations(stations)
+
+    def refresh_stations(self):
+        token = self.settings.get("x_token")
+        if not token:
+            messagebox.showinfo("Station Max Studio", "Сначала войдите в Яндекс", parent=self)
+            return
+        self.run_job(lambda: list_stations(token), self.populate_stations, "Загружаю список колонок…")
 
     def populate_stations(self, stations):
         values = []
