@@ -57,6 +57,10 @@ USER_AGENT = (
 )
 
 
+class YandexCaptchaError(RuntimeError):
+    """Yandex Passport replaced the login page with SmartCaptcha."""
+
+
 def load_settings() -> dict:
     settings = dict(DEFAULT_SETTINGS)
     try:
@@ -220,6 +224,7 @@ class YandexSession:
 
     def begin_qr_login(self) -> str:
         failures: list[str] = []
+        captcha_hosts: list[str] = []
         for passport_url in PASSPORT_URLS:
             for attempt in range(2):
                 suffix = "" if attempt == 0 else f"?nocache={int(time.time() * 1000)}"
@@ -257,8 +262,18 @@ class YandexSession:
                     if title_match
                     else "без заголовка"
                 )
+                host = urllib.parse.urlparse(passport_url).hostname or passport_url
+                lowered = html.lower()
+                if (
+                    "вы не робот" in lowered
+                    or "showcaptcha" in lowered
+                    or "smartcaptcha" in lowered
+                ):
+                    captcha_hosts.append(host)
+                    failures.append(f"{host}: Яндекс включил SmartCaptcha")
+                    break
                 failures.append(
-                    f"{urllib.parse.urlparse(passport_url).hostname}: страница «{title}» без CSRF"
+                    f"{host}: страница «{title}» без CSRF"
                 )
                 time.sleep(0.35)
 
@@ -266,6 +281,14 @@ class YandexSession:
                 break
 
         if not self.csrf:
+            if captcha_hosts:
+                hosts = ", ".join(dict.fromkeys(captcha_hosts))
+                raise YandexCaptchaError(
+                    "Яндекс включил SmartCaptcha для автоматического QR-входа "
+                    f"({hosts}). Это ограничение Яндекса нельзя безопасно обойти "
+                    "из приложения. Войдите через Cookies в окне подключения или "
+                    "импортируйте settings.json с уже работающего ПК/Home Assistant."
+                )
             detail = "; ".join(failures[-4:])
             raise RuntimeError(
                 "Не удалось начать QR-авторизацию: Яндекс не вернул CSRF. "
@@ -339,6 +362,78 @@ class YandexSession:
         if not token:
             raise RuntimeError("Яндекс не выдал токен после подтверждения входа")
         return token
+
+
+def token_from_cookies(value: str) -> str:
+    """Exchange browser cookies exported as JSON or a raw header for an x-token."""
+    value = value.strip()
+    if not value:
+        raise RuntimeError("Вставьте Cookies JSON или строку Cookie")
+
+    host = "passport.yandex.ru"
+    cookie_header = value
+    if value.lower().startswith("cookie:"):
+        cookie_header = value.split(":", 1)[1].strip()
+    elif value.startswith(("[", "{")):
+        try:
+            items = json.loads(value)
+        except ValueError as exc:
+            raise RuntimeError("Cookies JSON повреждён или скопирован не полностью") from exc
+        if isinstance(items, dict):
+            items = items.get("cookies", [])
+        if not isinstance(items, list):
+            raise RuntimeError("Cookies JSON должен содержать список cookies или поле cookies")
+
+        pairs: list[str] = []
+        domains: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            cookie_value = str(item.get("value", ""))
+            domain = str(item.get("domain", "")).strip()
+            if domain and "yandex." not in domain.lower():
+                continue
+            if name:
+                pairs.append(f"{name}={cookie_value}")
+            if "yandex." in domain:
+                domains.append(domain)
+        if not pairs:
+            raise RuntimeError("В Cookies JSON не найдены cookies Яндекса")
+        cookie_header = "; ".join(pairs)
+        if domains:
+            domain = next((item for item in domains if item.endswith("yandex.ru")), domains[0])
+            host = domain.lstrip(".")
+
+    cookie_names = {
+        part.split("=", 1)[0].strip().lower()
+        for part in cookie_header.split(";")
+        if "=" in part
+    }
+    if not {"session_id", "sessionid2"}.intersection(cookie_names):
+        raise RuntimeError(
+            "Не найдены Session_id/sessionid2. Сначала войдите в Яндекс в браузере "
+            "и экспортируйте cookies домена yandex.ru полностью."
+        )
+
+    session = YandexSession()
+    data = session._json_request(
+        f"{MOBILE_PROXY}/1/bundle/oauth/token_by_sessionid",
+        method="POST",
+        form={
+            "client_id": "c0ebe342af7d48fbbbfcf2d2eedb8f9e",
+            "client_secret": "ad0a908f0aa341a182a37ecd75bc319e",
+        },
+        headers={
+            "Ya-Client-Host": host,
+            "Ya-Client-Cookie": cookie_header,
+        },
+    )
+    token = data.get("access_token", "")
+    if not token:
+        errors = ", ".join(data.get("errors", [])) or data.get("status", "неизвестная ошибка")
+        raise RuntimeError(f"Яндекс не принял cookies: {errors}")
+    return token
 
 
 def qr_login(open_link, status_callback=None) -> str:

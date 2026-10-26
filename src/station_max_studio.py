@@ -25,6 +25,7 @@ except ImportError:
 
 from station_network import (
     MediaServer,
+    YandexCaptchaError,
     find_home_assistant_token,
     find_station_ip,
     list_stations,
@@ -33,6 +34,7 @@ from station_network import (
     read_home_assistant_token,
     save_settings,
     send_gif,
+    token_from_cookies,
 )
 
 
@@ -1074,6 +1076,113 @@ class HistoryPage(ctk.CTkFrame):
         self.refresh()
 
 
+class CookiesLoginDialog(ctk.CTkToplevel):
+    def __init__(self, owner, submit):
+        super().__init__(owner)
+        self.submit = submit
+        self.title("Вход через Cookies")
+        self.geometry("720x570")
+        self.minsize(620, 500)
+        self.configure(fg_color=COLORS["window"])
+        self.transient(owner)
+        self.grab_set()
+
+        content = ctk.CTkFrame(self, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=24, pady=22)
+        ctk.CTkLabel(
+            content,
+            text="Вход через Cookies",
+            font=ctk.CTkFont("Segoe UI", 24, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            content,
+            text=(
+                "Этот способ нужен, когда Яндекс показывает «Вы не робот?» и блокирует QR-вход.\n\n"
+                "1. Откройте Яндекс и войдите в нужный аккаунт, пройдя проверку.\n"
+                "2. Экспортируйте cookies домена yandex.ru в JSON или скопируйте строку Cookie.\n"
+                "3. Вставьте их ниже. Приложение обменяет cookies на токен и не будет их сохранять."
+            ),
+            text_color=COLORS["muted"],
+            justify="left",
+            anchor="w",
+            wraplength=650,
+        ).pack(fill="x", pady=(8, 12))
+
+        actions = ctk.CTkFrame(content, fg_color="transparent")
+        actions.pack(fill="x", pady=(0, 10))
+        ctk.CTkButton(
+            actions,
+            text="Открыть Яндекс",
+            fg_color=COLORS["panel_alt"],
+            hover_color=COLORS["accent_dark"],
+            command=lambda: webbrowser.open("https://passport.yandex.ru/profile"),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Загрузить Cookies JSON…",
+            fg_color=COLORS["panel_alt"],
+            hover_color=COLORS["accent_dark"],
+            command=self.load_json,
+        ).pack(side="left")
+
+        self.cookies = ctk.CTkTextbox(
+            content,
+            fg_color=COLORS["panel"],
+            border_width=1,
+            border_color=COLORS["border"],
+            wrap="word",
+        )
+        self.cookies.pack(fill="both", expand=True)
+        ctk.CTkLabel(
+            content,
+            text="Не отправляйте cookies другим людям: они дают доступ к аккаунту.",
+            text_color="#fbbf24",
+            anchor="w",
+        ).pack(fill="x", pady=(10, 12))
+
+        footer = ctk.CTkFrame(content, fg_color="transparent")
+        footer.pack(fill="x")
+        ctk.CTkButton(
+            footer,
+            text="Отмена",
+            fg_color=COLORS["panel_alt"],
+            hover_color=COLORS["accent_dark"],
+            command=self.destroy,
+        ).pack(side="right")
+        ctk.CTkButton(
+            footer,
+            text="Войти",
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            command=self.confirm,
+        ).pack(side="right", padx=(0, 8))
+
+    def load_json(self):
+        path = filedialog.askopenfilename(
+            title="Выберите экспортированный Cookies JSON",
+            parent=self,
+            filetypes=(("JSON", "*.json"), ("Все файлы", "*.*")),
+        )
+        if not path:
+            return
+        try:
+            value = Path(path).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            messagebox.showerror("Вход через Cookies", str(exc), parent=self)
+            return
+        self.cookies.delete("1.0", "end")
+        self.cookies.insert("1.0", value)
+
+    def confirm(self):
+        value = self.cookies.get("1.0", "end").strip()
+        if not value:
+            messagebox.showinfo("Вход через Cookies", "Вставьте cookies или загрузите JSON-файл", parent=self)
+            return
+        self.destroy()
+        self.submit(value)
+
+
 class ConnectionDialog(ctk.CTkToplevel):
     def __init__(self, owner):
         super().__init__(owner)
@@ -1098,10 +1207,15 @@ class ConnectionDialog(ctk.CTkToplevel):
         self.account_label.pack(fill="x", padx=16, pady=(0, 10))
         buttons = ctk.CTkFrame(account, fg_color="transparent")
         buttons.pack(fill="x", padx=16, pady=(0, 16))
-        self.login_button = ctk.CTkButton(buttons, text="Войти через Яндекс", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
-        self.login_button.pack(side="left", padx=(0, 8))
+        buttons.grid_columnconfigure((0, 1), weight=1)
+        self.login_button = ctk.CTkButton(buttons, text="Войти по QR", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
+        self.login_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
+        self.cookies_button = ctk.CTkButton(buttons, text="Войти через Cookies", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.cookies_login)
+        self.cookies_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
         self.import_button = ctk.CTkButton(buttons, text="Импорт из Home Assistant", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_ha)
-        self.import_button.pack(side="left")
+        self.import_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
+        self.settings_button = ctk.CTkButton(buttons, text="Импорт settings.json", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_settings)
+        self.settings_button.grid(row=1, column=1, sticky="ew", padx=(4, 0))
 
         station = self._section(content, "2. Выбор колонки")
         self.station_var = tk.StringVar(value="Выберите колонку")
@@ -1143,7 +1257,14 @@ class ConnectionDialog(ctk.CTkToplevel):
         self.working = value
         self.status_var.set(status or "")
         state = "disabled" if value else "normal"
-        for button in (self.login_button, self.import_button, self.refresh_button, self.find_button):
+        for button in (
+            self.login_button,
+            self.cookies_button,
+            self.import_button,
+            self.settings_button,
+            self.refresh_button,
+            self.find_button,
+        ):
             button.configure(state=state)
 
     def run_job(self, job, done, status="Подождите…"):
@@ -1167,7 +1288,8 @@ class ConnectionDialog(ctk.CTkToplevel):
         done(result)
 
     def failed(self, error, details):
-        self.set_working(False, "Ошибка")
+        status = "Яндекс запросил CAPTCHA — используйте Cookies" if isinstance(error, YandexCaptchaError) else "Ошибка"
+        self.set_working(False, status)
         log = DATA_DIR / "last-error.log"
         log.write_text(details, encoding="utf-8")
         messagebox.showerror("Настройка подключения", f"{error}\n\nПодробности: {log}", parent=self)
@@ -1182,6 +1304,20 @@ class ConnectionDialog(ctk.CTkToplevel):
         token = qr_login(webbrowser.open, status)
         return token, list_stations(token)
 
+    def cookies_login(self):
+        CookiesLoginDialog(self, self.start_cookie_login)
+
+    def start_cookie_login(self, value):
+        self.run_job(
+            lambda: self._cookies_login_job(value),
+            self.login_finished,
+            "Проверяю cookies и загружаю список колонок…",
+        )
+
+    def _cookies_login_job(self, value):
+        token = token_from_cookies(value)
+        return token, list_stations(token)
+
     def import_ha(self):
         folder = filedialog.askdirectory(title="Выберите config Home Assistant или корень HassWP", parent=self)
         if folder:
@@ -1190,6 +1326,41 @@ class ConnectionDialog(ctk.CTkToplevel):
     def _import_job(self, folder):
         token = read_home_assistant_token(folder)
         return token, list_stations(token)
+
+    def import_settings(self):
+        path = filedialog.askopenfilename(
+            title="Выберите settings.json с работающего ПК",
+            parent=self,
+            filetypes=(("Station Max Studio settings", "settings.json"), ("JSON", "*.json"), ("Все файлы", "*.*")),
+        )
+        if path:
+            self.run_job(
+                lambda: self._import_settings_job(path),
+                self.settings_import_finished,
+                "Проверяю настройки и загружаю список колонок…",
+            )
+
+    def _import_settings_job(self, path):
+        try:
+            imported = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Не удалось прочитать settings.json") from exc
+        if not isinstance(imported, dict) or not imported.get("x_token"):
+            raise RuntimeError("В settings.json нет сохранённой авторизации x_token")
+        token = str(imported["x_token"]).strip()
+        return token, list_stations(token), imported
+
+    def settings_import_finished(self, result):
+        token, stations, imported = result
+        for key in ("station_name", "device_id", "platform", "http_port"):
+            if imported.get(key):
+                self.settings[key] = imported[key]
+        # На другом ПК или Wi-Fi старый IP обычно неверен — ищем колонку заново.
+        self.settings["station_ip"] = ""
+        self.ip_var.set("")
+        self.port_var.set(str(self.settings.get("http_port", 8765)))
+        self.login_finished((token, stations))
+        self.status_var.set("Настройки импортированы. Нажмите «Найти в сети» для определения IP")
 
     def login_finished(self, result):
         token, stations = result
