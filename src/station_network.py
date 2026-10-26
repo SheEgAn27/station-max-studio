@@ -286,8 +286,8 @@ class YandexSession:
                 raise YandexCaptchaError(
                     "Яндекс включил SmartCaptcha для автоматического QR-входа "
                     f"({hosts}). Это ограничение Яндекса нельзя безопасно обойти "
-                    "из приложения. Войдите через Cookies в окне подключения или "
-                    "импортируйте settings.json с уже работающего ПК/Home Assistant."
+                    "автоматическим запросом. Нажмите «Войти в Яндекс», пройдите проверку "
+                    "во встроенном окне или импортируйте settings.json/Home Assistant."
                 )
             detail = "; ".join(failures[-4:])
             raise RuntimeError(

@@ -14,6 +14,7 @@ python -m PyInstaller `
     --collect-all PIL `
     --collect-all customtkinter `
     --collect-all imageio_ffmpeg `
+    --collect-all webview `
     "src/station_max_studio.py"
 
 if ($LASTEXITCODE -ne 0) {

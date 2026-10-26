@@ -4,11 +4,15 @@ import json
 import math
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
+import urllib.request
+import uuid
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +20,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+import certifi
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 try:
@@ -43,6 +48,10 @@ ctk.set_default_color_theme("dark-blue")
 
 APP_NAME = "Station Max Studio"
 APP_VERSION = "2.1.3"
+
+WEBVIEW2_CLIENT_ID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+WEBVIEW2_INSTALLER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+WEB_LOGIN_RESULT_ENV = "STATION_MAX_STUDIO_WEB_LOGIN_RESULT"
 
 APP_DIR = (
     Path(sys.executable).resolve().parent
@@ -80,6 +89,58 @@ COLORS = {
     "success": "#22c55e",
     "danger": "#ef4444",
 }
+
+
+class WebView2MissingError(RuntimeError):
+    pass
+
+
+def webview2_runtime_version() -> str:
+    """Return the installed Evergreen WebView2 version using Microsoft's registry keys."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+
+    locations = (
+        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_CLIENT_ID}"),
+        (winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_CLIENT_ID}"),
+        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_CLIENT_ID}"),
+    )
+    for root, path in locations:
+        try:
+            with winreg.OpenKey(root, path) as key:
+                version = str(winreg.QueryValueEx(key, "pv")[0]).strip()
+            if version and version != "0.0.0.0":
+                return version
+        except OSError:
+            continue
+    return ""
+
+
+def _application_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, str(Path(__file__).resolve())]
+
+
+def _cookies_to_records(cookies) -> list[dict]:
+    records = []
+    for cookie in cookies or []:
+        if not hasattr(cookie, "items"):
+            continue
+        for name, morsel in cookie.items():
+            records.append(
+                {
+                    "name": name,
+                    "value": morsel.value,
+                    "domain": morsel["domain"],
+                    "path": morsel["path"],
+                }
+            )
+    return records
 
 
 class CursorOnlySlider(ctk.CTkSlider):
@@ -1200,7 +1261,7 @@ class ConnectionDialog(ctk.CTkToplevel):
         content = ctk.CTkScrollableFrame(self, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=22, pady=20)
         ctk.CTkLabel(content, text="Подключение к Станции", font=ctk.CTkFont("Segoe UI", 26, "bold"), anchor="w").pack(fill="x")
-        ctk.CTkLabel(content, text="Войдите напрямую или импортируйте авторизацию из Home Assistant.", text_color=COLORS["muted"], anchor="w").pack(fill="x", pady=(2, 16))
+        ctk.CTkLabel(content, text="Откройте безопасное окно Яндекса, войдите и пройдите проверку — остальное приложение сделает само.", text_color=COLORS["muted"], anchor="w", wraplength=650).pack(fill="x", pady=(2, 16))
 
         account = self._section(content, "1. Аккаунт Яндекса")
         self.account_label = ctk.CTkLabel(account, text="Авторизация сохранена" if self.settings.get("x_token") else "Вход ещё не выполнен", text_color=COLORS["success"] if self.settings.get("x_token") else COLORS["muted"], anchor="w")
@@ -1208,14 +1269,16 @@ class ConnectionDialog(ctk.CTkToplevel):
         buttons = ctk.CTkFrame(account, fg_color="transparent")
         buttons.pack(fill="x", padx=16, pady=(0, 16))
         buttons.grid_columnconfigure((0, 1), weight=1)
-        self.login_button = ctk.CTkButton(buttons, text="Войти по QR", fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
-        self.login_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
-        self.cookies_button = ctk.CTkButton(buttons, text="Войти через Cookies", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.cookies_login)
-        self.cookies_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
+        self.web_login_button = ctk.CTkButton(buttons, text="Войти в Яндекс", height=42, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
+        self.web_login_button.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.login_button = ctk.CTkButton(buttons, text="Войти по QR", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.qr_login_action)
+        self.login_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
+        self.cookies_button = ctk.CTkButton(buttons, text="Cookies вручную", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.cookies_login)
+        self.cookies_button.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
         self.import_button = ctk.CTkButton(buttons, text="Импорт из Home Assistant", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_ha)
-        self.import_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
+        self.import_button.grid(row=2, column=0, sticky="ew", padx=(0, 4))
         self.settings_button = ctk.CTkButton(buttons, text="Импорт settings.json", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_settings)
-        self.settings_button.grid(row=1, column=1, sticky="ew", padx=(4, 0))
+        self.settings_button.grid(row=2, column=1, sticky="ew", padx=(4, 0))
 
         station = self._section(content, "2. Выбор колонки")
         self.station_var = tk.StringVar(value="Выберите колонку")
@@ -1258,6 +1321,7 @@ class ConnectionDialog(ctk.CTkToplevel):
         self.status_var.set(status or "")
         state = "disabled" if value else "normal"
         for button in (
+            self.web_login_button,
             self.login_button,
             self.cookies_button,
             self.import_button,
@@ -1288,13 +1352,114 @@ class ConnectionDialog(ctk.CTkToplevel):
         done(result)
 
     def failed(self, error, details):
-        status = "Яндекс запросил CAPTCHA — используйте Cookies" if isinstance(error, YandexCaptchaError) else "Ошибка"
+        status = "QR-вход заблокирован — нажмите «Войти в Яндекс»" if isinstance(error, YandexCaptchaError) else "Ошибка"
         self.set_working(False, status)
         log = DATA_DIR / "last-error.log"
         log.write_text(details, encoding="utf-8")
         messagebox.showerror("Настройка подключения", f"{error}\n\nПодробности: {log}", parent=self)
 
     def login(self):
+        version = webview2_runtime_version()
+        if not version:
+            install = messagebox.askyesno(
+                "Компонент WebView2 не найден",
+                "Для безопасного окна входа требуется Microsoft Edge WebView2 Runtime.\n\n"
+                "Скачать и установить официальный компонент Microsoft сейчас?",
+                parent=self,
+            )
+            if install:
+                self.run_job(
+                    self._install_webview2_job,
+                    self.webview2_installed,
+                    "Устанавливаю Microsoft WebView2…",
+                )
+            else:
+                self.status_var.set("Можно использовать QR, Home Assistant, settings.json или Cookies вручную")
+            return
+        self.start_embedded_login()
+
+    def start_embedded_login(self):
+        self.run_job(
+            self._embedded_login_job,
+            self.login_finished,
+            "В окне Яндекса войдите в аккаунт и пройдите проверку…",
+        )
+
+    def _embedded_login_job(self):
+        result_path = Path(tempfile.gettempdir()) / f"station-max-login-{uuid.uuid4().hex}.json"
+        environment = os.environ.copy()
+        environment[WEB_LOGIN_RESULT_ENV] = str(result_path)
+        try:
+            process = subprocess.run(
+                _application_command(),
+                env=environment,
+                timeout=12 * 60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if not result_path.exists():
+                raise RuntimeError(
+                    f"Окно входа завершилось без результата (код {process.returncode})"
+                )
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("Время входа истекло. Откройте вход ещё раз") from exc
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Не удалось получить результат встроенного входа") from exc
+        finally:
+            try:
+                result_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if result.get("status") == "success" and result.get("token"):
+            token = str(result["token"])
+            return token, list_stations(token)
+        if result.get("code") == "webview2_missing":
+            raise WebView2MissingError(result.get("message") or "Microsoft WebView2 Runtime не установлен")
+        if result.get("code") == "cancelled":
+            raise RuntimeError("Вход отменён пользователем")
+        raise RuntimeError(result.get("message") or "Не удалось войти через встроенное окно")
+
+    def _install_webview2_job(self):
+        installer = Path(tempfile.gettempdir()) / f"MicrosoftEdgeWebview2Setup-{uuid.uuid4().hex}.exe"
+        request = urllib.request.Request(WEBVIEW2_INSTALLER_URL, headers={"User-Agent": "Station Max Studio"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        try:
+            with urllib.request.urlopen(request, timeout=60, context=context) as response:
+                with installer.open("wb") as output:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+            process = subprocess.run(
+                [str(installer), "/silent", "/install"],
+                timeout=6 * 60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if process.returncode not in (0, 3010):
+                raise RuntimeError(f"Установщик WebView2 завершился с кодом {process.returncode}")
+            for _ in range(15):
+                version = webview2_runtime_version()
+                if version:
+                    return version
+                time.sleep(1)
+            raise RuntimeError("WebView2 установлен, но Windows пока его не обнаруживает. Перезапустите приложение")
+        finally:
+            try:
+                installer.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def webview2_installed(self, version):
+        messagebox.showinfo(
+            "Microsoft WebView2",
+            f"Компонент установлен: {version}\nСейчас откроется вход в Яндекс.",
+            parent=self,
+        )
+        self.start_embedded_login()
+
+    def qr_login_action(self):
         def status(text):
             self.after(0, lambda: self.status_var.set(text))
 
@@ -1799,8 +1964,154 @@ def packaged_logo_diagnostic():
     destination.write_text(report, encoding="utf-8")
 
 
+def embedded_yandex_login():
+    """Run the interactive Yandex login in a dedicated WebView2 child process."""
+    result_path = Path(os.environ[WEB_LOGIN_RESULT_ENV])
+    result_lock = threading.Lock()
+    state = {"written": False}
+
+    def write_result(payload):
+        with result_lock:
+            if state["written"]:
+                return False
+            result_path.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            state["written"] = True
+            return True
+
+    version = webview2_runtime_version()
+    if not version:
+        write_result(
+            {
+                "status": "error",
+                "code": "webview2_missing",
+                "message": "Microsoft Edge WebView2 Runtime не установлен",
+            }
+        )
+        return
+
+    try:
+        import webview
+    except Exception as exc:
+        write_result(
+            {
+                "status": "error",
+                "code": "webview_unavailable",
+                "message": f"Компонент встроенного браузера не загрузился: {exc}",
+            }
+        )
+        return
+
+    window = webview.create_window(
+        "Вход в Яндекс — Station Max Studio",
+        "https://passport.yandex.ru/profile",
+        width=960,
+        height=760,
+        min_size=(720, 560),
+        resizable=True,
+        text_select=True,
+        zoomable=True,
+        background_color="#0a0d18",
+    )
+
+    def monitor_login():
+        deadline = time.monotonic() + 11 * 60
+        while not state["written"] and time.monotonic() < deadline:
+            try:
+                records = _cookies_to_records(window.get_cookies())
+                names = {item["name"].lower() for item in records}
+                if {"session_id", "sessionid2"}.intersection(names):
+                    token = token_from_cookies(json.dumps(records, ensure_ascii=False))
+                    if write_result({"status": "success", "token": token}):
+                        window.destroy()
+                    return
+            except Exception:
+                # During redirects cookies can be temporarily incomplete. The next
+                # pass retries after Yandex finishes the current navigation.
+                pass
+            time.sleep(1.25)
+
+        if not state["written"]:
+            write_result(
+                {
+                    "status": "error",
+                    "code": "timeout",
+                    "message": "Время входа истекло. Откройте окно входа ещё раз",
+                }
+            )
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+    def closed():
+        write_result(
+            {
+                "status": "error",
+                "code": "cancelled",
+                "message": "Вход отменён пользователем",
+            }
+        )
+
+    window.events.closed += closed
+    try:
+        webview.start(
+            monitor_login,
+            gui="edgechromium",
+            debug=False,
+            private_mode=True,
+        )
+    except Exception as exc:
+        message = str(exc)
+        code = "webview2_missing" if "webview2" in message.lower() else "webview_error"
+        write_result({"status": "error", "code": code, "message": message})
+    if not state["written"]:
+        write_result(
+            {
+                "status": "error",
+                "code": "cancelled",
+                "message": "Окно входа было закрыто",
+            }
+        )
+
+
+def packaged_webview_diagnostic():
+    destination = Path(os.environ.get("TEMP", APP_DIR)) / "station-max-studio-webview-test.txt"
+    try:
+        import webview
+
+        version = webview2_runtime_version()
+        if not version:
+            raise RuntimeError("WebView2 Runtime not found")
+        window = webview.create_window(
+            "Station Max Studio WebView2 test",
+            html="<html><body>OK</body></html>",
+            hidden=True,
+        )
+        loaded = threading.Event()
+        window.events.loaded += loaded.set
+
+        def close_test():
+            if not loaded.wait(15):
+                raise TimeoutError("WebView2 page did not finish loading")
+            time.sleep(0.4)
+            window.destroy()
+
+        webview.start(close_test, gui="edgechromium", debug=False, private_mode=True)
+        report = f"OK\nwebview2={version}\n"
+    except Exception:
+        report = "ERROR\n" + traceback.format_exc()
+    destination.write_text(report, encoding="utf-8")
+
+
 if __name__ == "__main__":
-    if os.environ.get("STATION_MAX_STUDIO_NETWORK_TEST") == "1":
+    if os.environ.get(WEB_LOGIN_RESULT_ENV):
+        embedded_yandex_login()
+    elif os.environ.get("STATION_MAX_STUDIO_WEBVIEW_TEST") == "1":
+        packaged_webview_diagnostic()
+    elif os.environ.get("STATION_MAX_STUDIO_NETWORK_TEST") == "1":
         packaged_network_diagnostic()
     elif os.environ.get("STATION_MAX_STUDIO_MEDIA_TEST") == "1":
         packaged_media_diagnostic()

@@ -2,4 +2,5 @@ customtkinter==6.0.0
 certifi>=2026.9.9,<2027
 imageio-ffmpeg==0.6.0
 Pillow>=11.3,<13
+pywebview==6.2.1
 pyinstaller>=6.16,<7
