@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
 }
 
 PASSPORT_URL = "https://passport.yandex.ru"
+PASSPORT_URLS = (PASSPORT_URL, "https://passport.yandex.kz")
 MOBILE_PROXY = "https://mobileproxy.passport.yandex.net"
 DEVICE_LIST_URL = "https://iot.quasar.yandex.ru/m/v3/user/devices"
 GLAGOL_TOKEN_URL = "https://quasar.yandex.net/glagol/token"
@@ -178,6 +179,7 @@ class YandexSession:
         )
         self.csrf = ""
         self.auth_json: dict | None = None
+        self.passport_url = PASSPORT_URL
 
     def _open(self, request: urllib.request.Request, timeout: float = 25):
         request.add_header("User-Agent", USER_AGENT)
@@ -217,23 +219,70 @@ class YandexSession:
             raise RuntimeError("Яндекс вернул неожиданный ответ") from exc
 
     def begin_qr_login(self) -> str:
-        request = urllib.request.Request(f"{PASSPORT_URL}/pwl-yandex")
-        with self._open(request) as response:
-            html = response.read().decode("utf-8", "replace")
-        match = re.search(r'__CSRF__\s*=\s*"([^"]+)', html)
-        if not match:
-            raise RuntimeError("Не удалось начать QR-авторизацию: Яндекс не вернул CSRF")
-        self.csrf = match.group(1)
+        failures: list[str] = []
+        for passport_url in PASSPORT_URLS:
+            for attempt in range(2):
+                suffix = "" if attempt == 0 else f"?nocache={int(time.time() * 1000)}"
+                request = urllib.request.Request(
+                    f"{passport_url}/pwl-yandex{suffix}",
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                    },
+                )
+                try:
+                    with self._open(request) as response:
+                        html = response.read().decode("utf-8", "replace")
+                except RuntimeError as exc:
+                    failures.append(f"{urllib.parse.urlparse(passport_url).hostname}: {exc}")
+                    break
+
+                match = re.search(
+                    r"__CSRF__\s*=\s*['\"]([^'\"]+)['\"]",
+                    html,
+                    re.IGNORECASE,
+                )
+                if match:
+                    self.passport_url = passport_url
+                    self.csrf = match.group(1)
+                    break
+
+                title_match = re.search(
+                    r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
+                )
+                title = (
+                    re.sub(r"\s+", " ", title_match.group(1)).strip()
+                    if title_match
+                    else "без заголовка"
+                )
+                failures.append(
+                    f"{urllib.parse.urlparse(passport_url).hostname}: страница «{title}» без CSRF"
+                )
+                time.sleep(0.35)
+
+            if self.csrf:
+                break
+
+        if not self.csrf:
+            detail = "; ".join(failures[-4:])
+            raise RuntimeError(
+                "Не удалось начать QR-авторизацию: Яндекс не вернул CSRF. "
+                "Отключите VPN/прокси или выберите другой сервер VPN и повторите вход. "
+                f"Ответы: {detail}"
+            )
+
         headers = {"X-CSRF-Token": self.csrf}
         self.auth_json = self._json_request(
-            f"{PASSPORT_URL}/pwl-yandex/api/passport/auth/password/submit",
+            f"{self.passport_url}/pwl-yandex/api/passport/auth/password/submit",
             method="POST",
-            json_data={"retpath": f"{PASSPORT_URL}/"},
+            json_data={"retpath": f"{self.passport_url}/"},
             headers=headers,
         )
         track_id = self.auth_json.get("track_id", "")
         data = self._json_request(
-            f"{PASSPORT_URL}/pwl-yandex/api/passport/auth/magic/code",
+            f"{self.passport_url}/pwl-yandex/api/passport/auth/magic/code",
             method="POST",
             form={"location_id": "0", "magic_track_id": track_id, "track_id": ""},
             headers=headers,
@@ -250,7 +299,7 @@ class YandexSession:
         headers = {"X-CSRF-Token": self.csrf}
         while time.monotonic() < deadline:
             data = self._json_request(
-                f"{PASSPORT_URL}/pwl-yandex/api/passport/auth/magic/code/status",
+                f"{self.passport_url}/pwl-yandex/api/passport/auth/magic/code/status",
                 method="POST",
                 json_data=self.auth_json,
                 headers=headers,
@@ -258,7 +307,7 @@ class YandexSession:
             if data.get("state") == "otp_auth_finished":
                 track_id = data.get("trackId", "")
                 request = urllib.request.Request(
-                    f"{PASSPORT_URL}/pwl-yandex/api/passport/sessions/get_session",
+                    f"{self.passport_url}/pwl-yandex/api/passport/sessions/get_session",
                     data=urllib.parse.urlencode({"track_id": track_id}).encode("utf-8"),
                     headers={
                         "X-CSRF-Token": self.csrf,
@@ -282,7 +331,7 @@ class YandexSession:
                 "client_secret": "ad0a908f0aa341a182a37ecd75bc319e",
             },
             headers={
-                "Ya-Client-Host": "passport.yandex.ru",
+                "Ya-Client-Host": urllib.parse.urlparse(self.passport_url).hostname,
                 "Ya-Client-Cookie": cookie_header,
             },
         )
