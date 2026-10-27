@@ -13,7 +13,6 @@ import time
 import traceback
 import urllib.request
 import uuid
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -23,6 +22,8 @@ import customtkinter as ctk
 import certifi
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
+from auth_flow import LoginCookieGate, exchange_and_validate_cookie_records, safe_auth_error
+
 try:
     import imageio_ffmpeg
 except ImportError:
@@ -30,13 +31,10 @@ except ImportError:
 
 from station_network import (
     MediaServer,
-    YandexCaptchaError,
     find_home_assistant_token,
     find_station_ip,
     list_stations,
     load_settings,
-    qr_login,
-    read_home_assistant_token,
     save_settings,
     send_gif,
     token_from_cookies,
@@ -1137,113 +1135,6 @@ class HistoryPage(ctk.CTkFrame):
         self.refresh()
 
 
-class CookiesLoginDialog(ctk.CTkToplevel):
-    def __init__(self, owner, submit):
-        super().__init__(owner)
-        self.submit = submit
-        self.title("Вход через Cookies")
-        self.geometry("720x570")
-        self.minsize(620, 500)
-        self.configure(fg_color=COLORS["window"])
-        self.transient(owner)
-        self.grab_set()
-
-        content = ctk.CTkFrame(self, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=24, pady=22)
-        ctk.CTkLabel(
-            content,
-            text="Вход через Cookies",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"),
-            anchor="w",
-        ).pack(fill="x")
-        ctk.CTkLabel(
-            content,
-            text=(
-                "Этот способ нужен, когда Яндекс показывает «Вы не робот?» и блокирует QR-вход.\n\n"
-                "1. Откройте Яндекс и войдите в нужный аккаунт, пройдя проверку.\n"
-                "2. Экспортируйте cookies домена yandex.ru в JSON или скопируйте строку Cookie.\n"
-                "3. Вставьте их ниже. Приложение обменяет cookies на токен и не будет их сохранять."
-            ),
-            text_color=COLORS["muted"],
-            justify="left",
-            anchor="w",
-            wraplength=650,
-        ).pack(fill="x", pady=(8, 12))
-
-        actions = ctk.CTkFrame(content, fg_color="transparent")
-        actions.pack(fill="x", pady=(0, 10))
-        ctk.CTkButton(
-            actions,
-            text="Открыть Яндекс",
-            fg_color=COLORS["panel_alt"],
-            hover_color=COLORS["accent_dark"],
-            command=lambda: webbrowser.open("https://passport.yandex.ru/profile"),
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
-            actions,
-            text="Загрузить Cookies JSON…",
-            fg_color=COLORS["panel_alt"],
-            hover_color=COLORS["accent_dark"],
-            command=self.load_json,
-        ).pack(side="left")
-
-        self.cookies = ctk.CTkTextbox(
-            content,
-            fg_color=COLORS["panel"],
-            border_width=1,
-            border_color=COLORS["border"],
-            wrap="word",
-        )
-        self.cookies.pack(fill="both", expand=True)
-        ctk.CTkLabel(
-            content,
-            text="Не отправляйте cookies другим людям: они дают доступ к аккаунту.",
-            text_color="#fbbf24",
-            anchor="w",
-        ).pack(fill="x", pady=(10, 12))
-
-        footer = ctk.CTkFrame(content, fg_color="transparent")
-        footer.pack(fill="x")
-        ctk.CTkButton(
-            footer,
-            text="Отмена",
-            fg_color=COLORS["panel_alt"],
-            hover_color=COLORS["accent_dark"],
-            command=self.destroy,
-        ).pack(side="right")
-        ctk.CTkButton(
-            footer,
-            text="Войти",
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            command=self.confirm,
-        ).pack(side="right", padx=(0, 8))
-
-    def load_json(self):
-        path = filedialog.askopenfilename(
-            title="Выберите экспортированный Cookies JSON",
-            parent=self,
-            filetypes=(("JSON", "*.json"), ("Все файлы", "*.*")),
-        )
-        if not path:
-            return
-        try:
-            value = Path(path).read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            messagebox.showerror("Вход через Cookies", str(exc), parent=self)
-            return
-        self.cookies.delete("1.0", "end")
-        self.cookies.insert("1.0", value)
-
-    def confirm(self):
-        value = self.cookies.get("1.0", "end").strip()
-        if not value:
-            messagebox.showinfo("Вход через Cookies", "Вставьте cookies или загрузите JSON-файл", parent=self)
-            return
-        self.destroy()
-        self.submit(value)
-
-
 class ConnectionDialog(ctk.CTkToplevel):
     def __init__(self, owner):
         super().__init__(owner)
@@ -1252,8 +1143,8 @@ class ConnectionDialog(ctk.CTkToplevel):
         self.station_map = {}
         self.working = False
         self.title("Настройка подключения")
-        self.geometry("720x690")
-        self.minsize(680, 620)
+        self.geometry("720x620")
+        self.minsize(680, 560)
         self.configure(fg_color=COLORS["window"])
         self.transient(owner)
         self.grab_set()
@@ -1268,17 +1159,9 @@ class ConnectionDialog(ctk.CTkToplevel):
         self.account_label.pack(fill="x", padx=16, pady=(0, 10))
         buttons = ctk.CTkFrame(account, fg_color="transparent")
         buttons.pack(fill="x", padx=16, pady=(0, 16))
-        buttons.grid_columnconfigure((0, 1), weight=1)
+        buttons.grid_columnconfigure(0, weight=1)
         self.web_login_button = ctk.CTkButton(buttons, text="Войти в Яндекс", height=42, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], command=self.login)
-        self.web_login_button.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        self.login_button = ctk.CTkButton(buttons, text="Войти по QR", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.qr_login_action)
-        self.login_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
-        self.cookies_button = ctk.CTkButton(buttons, text="Cookies вручную", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.cookies_login)
-        self.cookies_button.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
-        self.import_button = ctk.CTkButton(buttons, text="Импорт из Home Assistant", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_ha)
-        self.import_button.grid(row=2, column=0, sticky="ew", padx=(0, 4))
-        self.settings_button = ctk.CTkButton(buttons, text="Импорт settings.json", fg_color=COLORS["panel_alt"], hover_color=COLORS["accent_dark"], command=self.import_settings)
-        self.settings_button.grid(row=2, column=1, sticky="ew", padx=(4, 0))
+        self.web_login_button.grid(row=0, column=0, sticky="ew")
 
         station = self._section(content, "2. Выбор колонки")
         self.station_var = tk.StringVar(value="Выберите колонку")
@@ -1322,10 +1205,6 @@ class ConnectionDialog(ctk.CTkToplevel):
         state = "disabled" if value else "normal"
         for button in (
             self.web_login_button,
-            self.login_button,
-            self.cookies_button,
-            self.import_button,
-            self.settings_button,
             self.refresh_button,
             self.find_button,
         ):
@@ -1352,8 +1231,7 @@ class ConnectionDialog(ctk.CTkToplevel):
         done(result)
 
     def failed(self, error, details):
-        status = "QR-вход заблокирован — нажмите «Войти в Яндекс»" if isinstance(error, YandexCaptchaError) else "Ошибка"
-        self.set_working(False, status)
+        self.set_working(False, "Ошибка")
         log = DATA_DIR / "last-error.log"
         log.write_text(details, encoding="utf-8")
         messagebox.showerror("Настройка подключения", f"{error}\n\nПодробности: {log}", parent=self)
@@ -1374,7 +1252,7 @@ class ConnectionDialog(ctk.CTkToplevel):
                     "Устанавливаю Microsoft WebView2…",
                 )
             else:
-                self.status_var.set("Можно использовать QR, Home Assistant, settings.json или Cookies вручную")
+                self.status_var.set("Для входа установите Microsoft Edge WebView2 Runtime")
             return
         self.start_embedded_login()
 
@@ -1413,7 +1291,10 @@ class ConnectionDialog(ctk.CTkToplevel):
 
         if result.get("status") == "success" and result.get("token"):
             token = str(result["token"])
-            return token, list_stations(token)
+            stations = result.get("stations")
+            if not isinstance(stations, list):
+                stations = list_stations(token)
+            return token, stations
         if result.get("code") == "webview2_missing":
             raise WebView2MissingError(result.get("message") or "Microsoft WebView2 Runtime не установлен")
         if result.get("code") == "cancelled":
@@ -1458,74 +1339,6 @@ class ConnectionDialog(ctk.CTkToplevel):
             parent=self,
         )
         self.start_embedded_login()
-
-    def qr_login_action(self):
-        def status(text):
-            self.after(0, lambda: self.status_var.set(text))
-
-        self.run_job(lambda: self._login_job(status), self.login_finished, "Открываю Яндекс…")
-
-    def _login_job(self, status):
-        token = qr_login(webbrowser.open, status)
-        return token, list_stations(token)
-
-    def cookies_login(self):
-        CookiesLoginDialog(self, self.start_cookie_login)
-
-    def start_cookie_login(self, value):
-        self.run_job(
-            lambda: self._cookies_login_job(value),
-            self.login_finished,
-            "Проверяю cookies и загружаю список колонок…",
-        )
-
-    def _cookies_login_job(self, value):
-        token = token_from_cookies(value)
-        return token, list_stations(token)
-
-    def import_ha(self):
-        folder = filedialog.askdirectory(title="Выберите config Home Assistant или корень HassWP", parent=self)
-        if folder:
-            self.run_job(lambda: self._import_job(folder), self.login_finished, "Читаю настройки Home Assistant…")
-
-    def _import_job(self, folder):
-        token = read_home_assistant_token(folder)
-        return token, list_stations(token)
-
-    def import_settings(self):
-        path = filedialog.askopenfilename(
-            title="Выберите settings.json с работающего ПК",
-            parent=self,
-            filetypes=(("Station Max Studio settings", "settings.json"), ("JSON", "*.json"), ("Все файлы", "*.*")),
-        )
-        if path:
-            self.run_job(
-                lambda: self._import_settings_job(path),
-                self.settings_import_finished,
-                "Проверяю настройки и загружаю список колонок…",
-            )
-
-    def _import_settings_job(self, path):
-        try:
-            imported = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError) as exc:
-            raise RuntimeError("Не удалось прочитать settings.json") from exc
-        if not isinstance(imported, dict) or not imported.get("x_token"):
-            raise RuntimeError("В settings.json нет сохранённой авторизации x_token")
-        token = str(imported["x_token"]).strip()
-        return token, list_stations(token), imported
-
-    def settings_import_finished(self, result):
-        token, stations, imported = result
-        for key in ("station_name", "device_id", "platform", "http_port"):
-            if imported.get(key):
-                self.settings[key] = imported[key]
-        # На другом ПК или Wi-Fi старый IP обычно неверен — ищем колонку заново.
-        self.settings["station_ip"] = ""
-        self.ip_var.set("")
-        self.port_var.set(str(self.settings.get("http_port", 8765)))
-        self.login_finished((token, stations))
-        self.status_var.set("Настройки импортированы. Нажмите «Найти в сети» для определения IP")
 
     def login_finished(self, result):
         token, stations = result
@@ -1964,6 +1777,44 @@ def packaged_logo_diagnostic():
     destination.write_text(report, encoding="utf-8")
 
 
+def packaged_auth_flow_diagnostic():
+    destination = Path(os.environ.get("TEMP", APP_DIR)) / "station-max-studio-auth-test.txt"
+    try:
+        from station_network import _yandex_cookie_host
+
+        records = [
+            {
+                "name": "Session_id",
+                "value": "synthetic-test-cookie",
+                "domain": ".yandex.ru",
+                "path": "/",
+            }
+        ]
+        gate = LoginCookieGate(stable_seconds=2.0, retry_seconds=12.0)
+        assert not gate.should_attempt(records, 10.0)
+        assert not gate.should_attempt(records, 11.0)
+        assert gate.should_attempt(records, 12.0)
+        assert not gate.should_attempt(records, 13.0)
+        assert gate.should_attempt(records, 24.0)
+        assert _yandex_cookie_host(["id.yandex.ru", ".yandex.ru"]) == ".yandex.ru"
+
+        class SyntheticHttpError(RuntimeError):
+            code = 401
+
+        try:
+            try:
+                raise SyntheticHttpError("synthetic")
+            except SyntheticHttpError as cause:
+                raise RuntimeError("wrapped") from cause
+        except RuntimeError as error:
+            assert safe_auth_error(error) == "HTTP 401"
+
+        report = "OK\ncookie_scope=.yandex.ru\nvalidation_gate=passed\nsafe_error=HTTP 401\n"
+    except Exception:
+        report = "ERROR\n" + traceback.format_exc()
+    destination.write_text(report, encoding="utf-8")
+
+
 def embedded_yandex_login():
     """Run the interactive Yandex login in a dedicated WebView2 child process."""
     result_path = Path(os.environ[WEB_LOGIN_RESULT_ENV])
@@ -2018,27 +1869,50 @@ def embedded_yandex_login():
 
     def monitor_login():
         deadline = time.monotonic() + 11 * 60
+        gate = LoginCookieGate()
+        last_validation_error = ""
+
         while not state["written"] and time.monotonic() < deadline:
+            now = time.monotonic()
             try:
                 records = _cookies_to_records(window.get_cookies())
-                names = {item["name"].lower() for item in records}
-                if {"session_id", "sessionid2"}.intersection(names):
-                    token = token_from_cookies(json.dumps(records, ensure_ascii=False))
-                    if write_result({"status": "success", "token": token}):
-                        window.destroy()
-                    return
-            except Exception:
-                # During redirects cookies can be temporarily incomplete. The next
-                # pass retries after Yandex finishes the current navigation.
-                pass
-            time.sleep(1.25)
+                # Yandex creates intermediate session cookies while the account,
+                # captcha and 2FA redirects are still running.  Give the cookie
+                # set time to settle and never accept it until the Smart Home API
+                # has verified the resulting token.
+                if not gate.should_attempt(records, now):
+                    time.sleep(0.8)
+                    continue
+                try:
+                    token, stations = exchange_and_validate_cookie_records(
+                        records, token_from_cookies, list_stations
+                    )
+                except Exception as exc:
+                    last_validation_error = safe_auth_error(exc)
+                    try:
+                        window.set_title("Завершите вход в Яндекс — Station Max Studio")
+                    except Exception:
+                        pass
+                    time.sleep(0.8)
+                    continue
+
+                if write_result({"status": "success", "token": token, "stations": stations}):
+                    window.destroy()
+                return
+            except Exception as exc:
+                # Redirects can temporarily make the WebView cookie store
+                # unavailable.  Keep waiting, but remember only a safe error
+                # class/code; cookies and tokens never reach the log.
+                last_validation_error = safe_auth_error(exc)
+                time.sleep(0.8)
 
         if not state["written"]:
+            suffix = f" (последняя проверка: {last_validation_error})" if last_validation_error else ""
             write_result(
                 {
                     "status": "error",
                     "code": "timeout",
-                    "message": "Время входа истекло. Откройте окно входа ещё раз",
+                    "message": f"Время входа истекло. Откройте окно входа ещё раз{suffix}",
                 }
             )
             try:
@@ -2117,6 +1991,8 @@ if __name__ == "__main__":
         packaged_media_diagnostic()
     elif os.environ.get("STATION_MAX_STUDIO_LOGO_TEST") == "1":
         packaged_logo_diagnostic()
+    elif os.environ.get("STATION_MAX_STUDIO_AUTH_FLOW_TEST") == "1":
+        packaged_auth_flow_diagnostic()
     else:
         app = StationMaxStudio()
         app.mainloop()

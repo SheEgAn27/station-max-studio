@@ -364,6 +364,17 @@ class YandexSession:
         return token
 
 
+def _yandex_cookie_host(domains: list[str]) -> str:
+    """Choose the exact cookie scope expected by token_by_sessionid."""
+    domains = [str(item).strip() for item in domains if str(item).strip()]
+    if not domains:
+        return "passport.yandex.ru"
+    return next(
+        (item for item in domains if item.lower().startswith(".yandex.")),
+        next((item for item in domains if item.lower().endswith("yandex.ru")), domains[0]),
+    )
+
+
 def token_from_cookies(value: str) -> str:
     """Exchange browser cookies exported as JSON or a raw header for an x-token."""
     value = value.strip()
@@ -402,8 +413,11 @@ def token_from_cookies(value: str) -> str:
             raise RuntimeError("В Cookies JSON не найдены cookies Яндекса")
         cookie_header = "; ".join(pairs)
         if domains:
-            domain = next((item for item in domains if item.endswith("yandex.ru")), domains[0])
-            host = domain.lstrip(".")
+            # Yandex expects the cookie scope itself here (for example
+            # ``.yandex.ru``), not a regular web hostname.  Stripping the
+            # leading dot can still produce an access_token, but that token is
+            # not accepted by the Smart Home API and later fails with 401.
+            host = _yandex_cookie_host(domains)
 
     cookie_names = {
         part.split("=", 1)[0].strip().lower()
