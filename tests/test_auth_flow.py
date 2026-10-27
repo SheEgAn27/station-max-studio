@@ -48,6 +48,63 @@ class CookieScopeTests(unittest.TestCase):
         self.assertEqual(captured["Ya-Client-Host"], ".yandex.ru")
 
 
+class SystemCurlTransportTests(unittest.TestCase):
+    def test_credentials_are_sent_over_stdin_not_process_arguments(self):
+        captured = {}
+        original_path = network._system_curl_path
+        original_run = network.subprocess.run
+
+        class Result:
+            returncode = 0
+            stdout = b'{"status":"ok"}'
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured.update(kwargs)
+            return Result()
+
+        network._system_curl_path = lambda: "curl.exe"
+        network.subprocess.run = fake_run
+        try:
+            network._system_curl_request(
+                "https://passport.yandex.ru/test",
+                headers={"Authorization": "OAuth synthetic-secret"},
+            )
+        finally:
+            network._system_curl_path = original_path
+            network.subprocess.run = original_run
+
+        command = " ".join(captured["args"])
+        config = captured["input"].decode("utf-8")
+        self.assertNotIn("synthetic-secret", command)
+        self.assertIn("synthetic-secret", config)
+        self.assertEqual(captured["args"][-2:], ["--config", "-"])
+
+    def test_curl_error_does_not_echo_stderr_or_secret(self):
+        original_path = network._system_curl_path
+        original_run = network.subprocess.run
+
+        class Result:
+            returncode = 22
+            stdout = b""
+            stderr = b"Authorization: OAuth synthetic-secret"
+
+        network._system_curl_path = lambda: "curl.exe"
+        network.subprocess.run = lambda *_args, **_kwargs: Result()
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                network._system_curl_request(
+                    "https://passport.yandex.ru/test",
+                    headers={"Authorization": "OAuth synthetic-secret"},
+                )
+        finally:
+            network._system_curl_path = original_path
+            network.subprocess.run = original_run
+
+        self.assertIn("кодом 22", str(raised.exception))
+        self.assertNotIn("synthetic-secret", str(raised.exception))
+
+
 class EmbeddedLoginTests(unittest.TestCase):
     records = [
         {

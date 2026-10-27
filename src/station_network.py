@@ -17,10 +17,13 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import struct
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -518,14 +521,146 @@ def auth_session_cookie_scopes(x_token: str) -> list[str]:
     return sorted({f"{cookie.name}@{cookie.domain}" for cookie in processor.cookiejar})
 
 
-def list_stations(x_token: str) -> list[dict]:
+def _system_curl_path() -> str:
+    """Return the Windows curl executable without depending on PATH alone."""
+    found = shutil.which("curl.exe") or shutil.which("curl")
+    if found:
+        return found
+    if os.name == "nt":
+        candidate = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "curl.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+def _curl_config_value(value: str) -> str:
+    """Quote a value for curl's stdin config format."""
+    value = str(value)
+    if "\r" in value or "\n" in value:
+        raise ValueError("curl config values must be single-line")
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _system_curl_request(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    data: str | None = None,
+    cookie_path: Path | None = None,
+    follow_redirects: bool = False,
+    timeout: int = 30,
+) -> bytes:
+    """Run curl with credentials supplied over stdin, never in its arguments."""
+    executable = _system_curl_path()
+    if not executable:
+        raise FileNotFoundError("Windows curl.exe is unavailable")
+
+    quote = _curl_config_value
+    config = [
+        "silent",
+        "show-error",
+        "fail",
+        f'max-time = "{max(1, int(timeout))}"',
+        f'connect-timeout = "{min(15, max(1, int(timeout)))}"',
+        f'user-agent = "{quote(USER_AGENT)}"',
+        f'url = "{quote(url)}"',
+    ]
+    if method.upper() != "GET":
+        config.append(f'request = "{quote(method.upper())}"')
+    for name, value in (headers or {}).items():
+        config.append(f'header = "{quote(f"{name}: {value}")}"')
+    if data is not None:
+        config.append(f'data = "{quote(data)}"')
+    if cookie_path is not None:
+        cookie_file = quote(cookie_path.resolve().as_posix())
+        config.extend([f'cookie = "{cookie_file}"', f'cookie-jar = "{cookie_file}"'])
+    if follow_redirects:
+        config.extend(["location", 'max-redirs = "10"'])
+
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    result = subprocess.run(
+        [executable, "--config", "-"],
+        input=("\n".join(config) + "\n").encode("utf-8"),
+        capture_output=True,
+        timeout=timeout + 5,
+        creationflags=creation_flags,
+    )
+    if result.returncode:
+        # Do not include curl stderr: Passport URLs may contain a temporary
+        # track id, and authentication headers must never reach diagnostics.
+        raise RuntimeError(f"Windows curl завершил запрос с кодом {result.returncode}")
+    return result.stdout
+
+
+def _station_data_with_system_curl(x_token: str) -> dict:
+    """Build a Passport session and fetch IoT devices via Windows Schannel.
+
+    Some VPN/filter combinations treat the OpenSSL fingerprint embedded by
+    PyInstaller as a guest session. Windows curl uses Schannel and receives
+    the proper Session_id cookies on the same machine.
+    """
+    if not x_token:
+        raise RuntimeError("Сначала войдите в аккаунт Яндекса")
+    with tempfile.TemporaryDirectory(prefix="station-max-auth-") as temp_dir:
+        cookie_path = Path(temp_dir) / "cookies.txt"
+        form = urllib.parse.urlencode(
+            {"type": "x-token", "retpath": "https://www.yandex.ru"}
+        )
+        raw = _system_curl_request(
+            f"{MOBILE_PROXY}/1/bundle/auth/x_token/",
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Ya-Consumer-Authorization": f"OAuth {x_token}",
+            },
+            data=form,
+            cookie_path=cookie_path,
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError("Яндекс вернул повреждённый ответ при проверке входа") from exc
+        if payload.get("status") != "ok":
+            raise RuntimeError("Сохранённая авторизация Яндекса больше не действует")
+
+        host = str(payload.get("passport_host", PASSPORT_URL)).rstrip("/")
+        track = urllib.parse.quote(str(payload.get("track_id", "")))
+        if not track:
+            raise RuntimeError("Яндекс не создал сессию аккаунта")
+        _system_curl_request(
+            f"{host}/auth/session/?track_id={track}",
+            cookie_path=cookie_path,
+            follow_redirects=True,
+        )
+        raw = _system_curl_request(DEVICE_LIST_URL, cookie_path=cookie_path)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError("Яндекс вернул повреждённый список устройств") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Яндекс вернул неизвестный формат списка устройств")
+        return data
+
+
+def _station_data_with_urllib(x_token: str) -> dict:
     opener = _session_from_token(x_token)
     request = urllib.request.Request(
         DEVICE_LIST_URL, headers={"User-Agent": USER_AGENT}
     )
+    with opener.open(request, timeout=25) as response:
+        return json.load(response)
+
+
+def list_stations(x_token: str) -> list[dict]:
     try:
-        with opener.open(request, timeout=25) as response:
-            data = json.load(response)
+        # PyInstaller's OpenSSL session is rejected as a guest on a subset of
+        # Windows/VPN configurations. Prefer Schannel in the packaged app;
+        # retain urllib as a portable fallback when curl is unavailable.
+        if os.name == "nt" and getattr(sys, "frozen", False) and _system_curl_path():
+            data = _station_data_with_system_curl(x_token)
+        else:
+            data = _station_data_with_urllib(x_token)
     except Exception as exc:
         raise RuntimeError(f"Не удалось получить список колонок: {exc}") from exc
     if data.get("status") != "ok":
