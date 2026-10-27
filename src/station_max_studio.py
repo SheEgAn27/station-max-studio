@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -31,6 +32,7 @@ except ImportError:
 
 from station_network import (
     MediaServer,
+    auth_session_cookie_scopes,
     find_home_assistant_token,
     find_station_ip,
     list_stations,
@@ -1734,14 +1736,31 @@ class StationMaxStudio(ctk.CTk):
 
 def packaged_network_diagnostic():
     destination = Path(os.environ.get("TEMP", APP_DIR)) / "station-max-studio-network-test.txt"
+    settings = load_settings()
+    token = str(settings.get("x_token", ""))
+    metadata = (
+        f"token_length={len(token)}\n"
+        f"token_fingerprint={hashlib.sha256(token.encode('utf-8')).hexdigest()[:12] if token else 'none'}\n"
+        f"proxy_types={','.join(sorted(urllib.request.getproxies())) or 'none'}\n"
+    )
     try:
-        settings = load_settings()
-        stations = list_stations(settings.get("x_token", ""))
+        cookie_scopes = auth_session_cookie_scopes(token)
+        stations = list_stations(token)
         selected = next((item for item in stations if item["device_id"] == settings.get("device_id")), stations[0])
         address = find_station_ip(settings["x_token"], selected["device_id"], selected["platform"], settings.get("station_ip", ""))
-        report = f"OK\nstations={len(stations)}\nselected={selected['name']}\nip={address}\n"
+        report = (
+            f"OK\n{metadata}cookies={','.join(cookie_scopes)}\n"
+            f"stations={len(stations)}\nselected={selected['name']}\nip={address}\n"
+        )
     except Exception:
-        report = "ERROR\n" + traceback.format_exc()
+        try:
+            cookie_scopes = auth_session_cookie_scopes(token)
+        except Exception as cookie_error:
+            cookie_scopes = [f"unavailable:{safe_auth_error(cookie_error)}"]
+        report = (
+            f"ERROR\n{metadata}cookies={','.join(cookie_scopes)}\n"
+            + traceback.format_exc()
+        )
     destination.write_text(report, encoding="utf-8")
 
 

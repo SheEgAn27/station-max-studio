@@ -502,6 +502,22 @@ def _session_from_token(x_token: str):
     return opener
 
 
+def auth_session_cookie_scopes(x_token: str) -> list[str]:
+    """Return only cookie names/domains for diagnostics, never their values."""
+    opener = _session_from_token(x_token)
+    processor = next(
+        (
+            handler
+            for handler in opener.handlers
+            if isinstance(handler, urllib.request.HTTPCookieProcessor)
+        ),
+        None,
+    )
+    if processor is None:
+        return []
+    return sorted({f"{cookie.name}@{cookie.domain}" for cookie in processor.cookiejar})
+
+
 def list_stations(x_token: str) -> list[dict]:
     opener = _session_from_token(x_token)
     request = urllib.request.Request(
